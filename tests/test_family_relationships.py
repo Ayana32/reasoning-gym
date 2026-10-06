@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from reasoning_gym import create_dataset
@@ -131,3 +133,42 @@ def test_family_relationships_curriculum():
     curriculum.decrement_global_level()  # Should go back to level 5
     back_to_five_cfg = curriculum.generate_configuration(base_value)
     assert back_to_five_cfg.min_family_size == 3 and back_to_five_cfg.max_family_size == 8  # Back to level 5
+
+
+def _parse_story(story: str) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Return spouse and parents maps parsed from the story text."""
+    spouse, parents = {}, {}
+    for a, b, children in re.findall(
+        r"(\w+) is married to (\w+)\.(?: They have (?:a child|children) called ([\w, ]+)\.)?", story
+    ):
+        spouse[a], spouse[b] = b, a
+        for child in re.split(r", | and ", children) if children else []:
+            parents[child] = {a, b}
+    return spouse, parents
+
+
+def test_niece_nephew_uses_person1_gender():
+    # seed=38, idx=9: "What is Joseph to Grace?" (Joseph is male, answer should be nephew)
+    male_names = set(FamilyRelationshipsConfig().male_names)
+    dataset = create_dataset("family_relationships", seed=38, size=20, min_family_size=11, max_family_size=12)
+    items = [item for item in dataset if item["answer"] in (Relationship.NIECE.value, Relationship.NEPHEW.value)]
+    assert len(items) > 0
+    for item in items:
+        expected = Relationship.NEPHEW if item["metadata"]["person1"] in male_names else Relationship.NIECE
+        assert item["answer"] == expected.value, item["question"]
+
+
+def test_parent_in_law_direction():
+    # seed=0, idx=1: "What relation is Owen to Sarah?" (Owen is married to Sarah's daughter Lily)
+    dataset = create_dataset("family_relationships", seed=0, size=20, min_family_size=11, max_family_size=12)
+    items = [
+        item
+        for item in dataset
+        if item["answer"] in (Relationship.MOTHER_IN_LAW.value, Relationship.FATHER_IN_LAW.value)
+    ]
+    assert len(items) > 0
+    for item in items:
+        spouse, parents = _parse_story(item["question"])
+        person1, person2 = item["metadata"]["person1"], item["metadata"]["person2"]
+        # person1 must be a parent of person2's spouse
+        assert person2 in spouse and person1 in parents.get(spouse[person2], set()), item["question"]
